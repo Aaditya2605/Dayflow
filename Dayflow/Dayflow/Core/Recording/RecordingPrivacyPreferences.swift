@@ -189,7 +189,8 @@ enum RecordingPrivacyPreferences {
         let enumerator = fileManager.enumerator(
           at: root,
           includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey],
-          options: [.skipsHiddenFiles, .skipsPackageDescendants]
+          // Not .skipsHiddenFiles: /Applications/Safari.app is a hidden-flagged symlink.
+          options: [.skipsPackageDescendants]
         )
       else {
         continue
