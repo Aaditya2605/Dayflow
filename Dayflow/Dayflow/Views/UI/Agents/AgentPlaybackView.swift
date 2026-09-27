@@ -42,9 +42,12 @@ struct AgentPlaybackView: View {
     .onAppear {
       host.usage.appear(foreground: NSApp.isActive)
       setupStarted = host.hasStarted
-      if onboardingCompleted { host.startIfNeeded() }
+      host.setShown(true)
     }
-    .onDisappear { host.usage.disappear() }
+    .onDisappear {
+      host.usage.disappear()
+      host.setShown(false)
+    }
   }
 
   private var onboarding: some View {
@@ -154,13 +157,19 @@ private struct AgentPlaybackWebView: NSViewRepresentable {
   }
 }
 
-/// Owns one server and WebView for the app session, including across tab switches.
+/// Owns one server and WebView, kept across quick tab switches and released once the
+/// dashboard has been out of sight for a while.
 @MainActor
 final class AgentPlaybackHost: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
   static let shared = AgentPlaybackHost()
   @Published private(set) var webView: WKWebView?
   @Published private(set) var error: String?
   @Published private(set) var isReady = false
+
+  private var isShown = false
+  private var isVisible = false
+  private weak var window: NSWindow?
+  private var releaseTask: Task<Void, Never>?
 
   private var process: Process?
   private var serverPID: Int32?
@@ -203,6 +212,11 @@ final class AgentPlaybackHost: NSObject, ObservableObject, WKNavigationDelegate,
       object: nil)
     NotificationCenter.default.addObserver(
       self, selector: #selector(consentChanged), name: .analyticsPreferenceChanged, object: nil)
+    // Closing the window, hiding Dayflow (including its soft quit) and minimizing all
+    // change the window's occlusion; the tab can stay mounted through all of them.
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(visibilityChanged),
+      name: NSWindow.didChangeOcclusionStateNotification, object: nil)
   }
 
   @objc private func becameActive() { usage.setForeground(true) }
@@ -454,6 +468,34 @@ final class AgentPlaybackHost: NSObject, ObservableObject, WKNavigationDelegate,
     webView?.uiDelegate = nil
     webView = nil
     origin = nil
+  }
+
+  func setShown(_ shown: Bool) {
+    isShown = shown
+    if !shown { window = nil }
+    visibilityChanged()
+  }
+
+  /// Dayflow keeps running with its window closed, and a loaded dashboard holds a few hundred
+  /// MB of GPU memory. Stop the page and server a minute after the dashboard leaves the
+  /// screen, and start them again when it comes back.
+  @objc private func visibilityChanged() {
+    if let current = webView?.window { window = current }
+    // Before the WebView joins a window, a shown tab counts as visible.
+    let visible = isShown && (window?.occlusionState.contains(.visible) ?? true)
+    guard visible != isVisible else { return }
+    isVisible = visible
+    releaseTask?.cancel()
+    // Onboarding starts the server itself and must survive tab switches while it downloads.
+    guard UserDefaults.standard.bool(forKey: "agentsOnboardingCompleted") else { return }
+    if visible {
+      startIfNeeded()
+    } else {
+      releaseTask = Task { [weak self] in
+        do { try await Task.sleep(for: .seconds(60)) } catch { return }
+        self?.stop()
+      }
+    }
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
