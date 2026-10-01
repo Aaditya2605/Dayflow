@@ -7,6 +7,7 @@ final class StatusBarController: NSObject {
   private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
   private let popover = NSPopover()
   private var cancellable: AnyCancellable?
+  private var visibilityCancellable: AnyCancellable?
 
   override init() {
     super.init()
@@ -28,6 +29,11 @@ final class StatusBarController: NSObject {
       .removeDuplicates()
       .sink { [weak self] isRecording in
         self?.updateIcon(isRecording: isRecording)
+      }
+
+    visibilityCancellable = UserDefaults.standard.publisher(for: \.showMenuBarIcon)
+      .sink { [weak self] isVisible in
+        self?.statusItem.isVisible = isVisible
       }
   }
 
@@ -60,5 +66,12 @@ final class StatusBarController: NSObject {
     )
     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     popover.contentViewController?.view.window?.makeKey()
+  }
+}
+
+extension UserDefaults {
+  // KVO needs the property name to match the defaults key.
+  @objc dynamic var showMenuBarIcon: Bool {
+    object(forKey: "showMenuBarIcon") as? Bool ?? true
   }
 }
